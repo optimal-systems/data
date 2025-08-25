@@ -18,7 +18,7 @@ This repository uses a multi-project [uv](https://docs.astral.sh/uv/)-based buil
 ### Prerequisites
 
 * [python 3.11+](https://www.python.org/downloads/)
-* [UV](https://docs.astral.sh/uv/getting-started/installation.html)
+* [uv](https://docs.astral.sh/uv/getting-started/installation.html)
 
 ### Under the data folder:
 
