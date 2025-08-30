@@ -16,7 +16,11 @@ from load import (
     create_prod_supermarkets_table,
 )
 from utils.logger import configure_logging
-from extract import extract_supermarkets
+from extract import (
+    extract_products,
+    extract_supermarkets,
+    extract_categories,
+)
 
 
 @click.group()
@@ -40,7 +44,7 @@ def supermarket(ctx, debug):
 def extract_raw(ctx):
     """Extract raw data from API to PostgreSQL"""
     try:
-        logging.info("Extracting raw supermarkets data from API...")
+        logging.info("Extracting raw supermarkets data from API")
         df = extract_supermarkets()
 
         logging.info(f"Found {len(df)} raw supermarkets records to load...")
@@ -60,7 +64,7 @@ def extract_raw(ctx):
 def transform_staging(ctx):
     """Transform raw data to staging schema"""
     try:
-        logging.info("Transforming raw data to staging schema...")
+        logging.info("Transforming raw data to staging schema")
 
         # Get the most recent raw table
         from datetime import datetime
@@ -85,7 +89,7 @@ def transform_staging(ctx):
 def deploy_prod(ctx):
     """Deploy staging data to production"""
     try:
-        logging.info("Deploying staging data to production...")
+        logging.info("Deploying staging data to production")
 
         # Promote data to production
         load_prod_data_from_staging()
@@ -104,10 +108,10 @@ def deploy_prod(ctx):
 def run_pipeline(ctx):
     """Execute complete data pipeline"""
     try:
-        logging.info("Starting full data pipeline execution...")
+        logging.info("Starting full data pipeline execution")
 
         # Step 1: Extract and load raw data
-        logging.info("Step 1: Extracting and loading raw data...")
+        logging.info("Step 1: Extracting and loading raw data")
         df = extract_supermarkets()
         logging.info(f"Found {len(df)} raw supermarkets records to load...")
 
@@ -121,16 +125,16 @@ def run_pipeline(ctx):
         load_raw_data_to_postgres(df)
 
         # Step 2: Create schemas if they don't exist
-        logging.info("Step 2: Creating schemas and table structures...")
+        logging.info("Step 2: Creating schemas and table structures")
         create_staging_supermarkets_table()
         create_prod_supermarkets_table()
 
         # Step 3: Consolidate to staging
-        logging.info("Step 3: Transforming data to staging...")
+        logging.info("Step 3: Transforming data to staging")
         load_staging_data_from_raw(raw_table_name)
 
         # Step 4: Promote to production
-        logging.info("Step 4: Deploying data to production...")
+        logging.info("Step 4: Deploying data to production")
         load_prod_data_from_staging()
 
         logging.info("Full data pipeline completed successfully!")
@@ -140,6 +144,51 @@ def run_pipeline(ctx):
         raise
     finally:
         close_pool()
+
+
+@cli.group()
+@click.option("--debug", is_flag=True, help="Enable debug mode.")
+@click.pass_context
+def products(ctx, debug):
+    """Products data pipeline commands"""
+    ctx.ensure_object(dict)
+    configure_logging(debug)
+
+
+@products.command()
+@click.pass_context
+def get_categories(ctx):
+    """Extract categories from Ahorramas website"""
+    try:
+        logging.info("Extracting categories from Ahorramas website")
+
+        # Extract categories
+        categories = extract_categories()
+
+        # Log the categories
+        logging.info(f"Found {len(categories)} categories")
+        logging.info(f"Categories: {categories}")
+
+        logging.info("Categories extracted and saved successfully")
+
+    except Exception as e:
+        logging.error(f"Error extracting categories: {e}")
+        raise
+    finally:
+        close_pool()
+
+
+@products.command()
+@click.pass_context
+def get_products(ctx):
+    """Extract products from the 'Mascotas' category"""
+    logging.info("Extracting products from Mascotas category")
+
+    df = extract_products("https://www.ahorramas.com/mascotas/")
+    logging.info(f"Found {len(df)} products in Mascotas category")
+
+    # show the first 5 rows
+    print(df.head(5))
 
 
 if __name__ == "__main__":
