@@ -204,8 +204,7 @@ def get_products(ctx):
         ]
     )
 
-    # show the first 5 rows
-    logging.info(df.head(5))
+    logging.info(df.info())
 
 
 if __name__ == "__main__":
