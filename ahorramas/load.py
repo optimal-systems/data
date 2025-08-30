@@ -3,7 +3,6 @@ import sys
 from os.path import dirname, abspath
 import os
 import logging
-import json
 import polars as pl
 from datetime import datetime
 from utils.postgres import execute_query
@@ -115,6 +114,7 @@ def create_staging_supermarkets_table():
         latitude DECIMAL(10, 8),
         longitude DECIMAL(11, 8),
         extracted_date DATE,
+        name VARCHAR(50) NOT NULL,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
     ) PARTITION BY RANGE (extracted_date);
@@ -127,6 +127,7 @@ def create_staging_supermarkets_table():
     CREATE INDEX IF NOT EXISTS idx_staging_supermarkets_store_id ON staging.supermarkets(store_id);
     CREATE INDEX IF NOT EXISTS idx_staging_supermarkets_extracted_date ON staging.supermarkets(extracted_date);
     CREATE INDEX IF NOT EXISTS idx_staging_supermarkets_location ON staging.supermarkets(latitude, longitude);
+    CREATE INDEX IF NOT EXISTS idx_staging_supermarkets_name ON staging.supermarkets(name);
     """
 
     execute_query(create_indexes_query, fetch=False)
@@ -151,6 +152,7 @@ def create_prod_supermarkets_table():
         latitude DECIMAL(10, 8),
         longitude DECIMAL(11, 8),
         is_active BOOLEAN DEFAULT TRUE,
+        name VARCHAR(50) NOT NULL,
         last_updated TIMESTAMPTZ DEFAULT NOW(),
         created_at TIMESTAMPTZ DEFAULT NOW(),
         extracted_date DATE
@@ -169,7 +171,7 @@ def create_prod_supermarkets_table():
         ) THEN
             ALTER TABLE prod.supermarkets 
             ADD CONSTRAINT prod_supermarkets_store_id_extracted_date_key 
-            UNIQUE (store_id, extracted_date);
+            UNIQUE (store_id, extracted_date, name);
         END IF;
     END $$;
     """
@@ -182,6 +184,7 @@ def create_prod_supermarkets_table():
     CREATE INDEX IF NOT EXISTS idx_prod_supermarkets_location ON prod.supermarkets(latitude, longitude);
     CREATE INDEX IF NOT EXISTS idx_prod_supermarkets_active ON prod.supermarkets(is_active);
     CREATE INDEX IF NOT EXISTS idx_prod_supermarkets_extracted_date ON prod.supermarkets(extracted_date);
+    CREATE INDEX IF NOT EXISTS idx_prod_supermarkets_name ON prod.supermarkets(name);
     """
 
     execute_query(create_prod_indexes_query, fetch=False)
@@ -218,7 +221,8 @@ def load_staging_data_from_raw(raw_table_name: str):
     # Delete existing data for this date to avoid duplicates
     delete_existing_query = f"""
     DELETE FROM staging.supermarkets 
-    WHERE extracted_date = '{extracted_date[:4]}-{extracted_date[4:6]}-{extracted_date[6:8]}'::date;
+    WHERE extracted_date = '{extracted_date[:4]}-{extracted_date[4:6]}-{extracted_date[6:8]}'::date
+    AND name = 'ahorramas';
     """
 
     execute_query(delete_existing_query, fetch=False)
@@ -229,7 +233,7 @@ def load_staging_data_from_raw(raw_table_name: str):
     # Insert consolidated data into staging table
     insert_staging_query = f"""
     INSERT INTO staging.supermarkets (
-        store_id, address, schedule, holidays, latitude, longitude, extracted_date
+        store_id, address, schedule, holidays, latitude, longitude, extracted_date, name
     )
     SELECT 
         COALESCE(store_id, '') as store_id,
@@ -244,7 +248,8 @@ def load_staging_data_from_raw(raw_table_name: str):
             WHEN longitude ~ '^[0-9.-]+$' THEN CAST(longitude AS DECIMAL(11, 8))
             ELSE NULL 
         END as longitude,
-        '{extracted_date[:4]}-{extracted_date[4:6]}-{extracted_date[6:8]}'::date as extracted_date
+        '{extracted_date[:4]}-{extracted_date[4:6]}-{extracted_date[6:8]}'::date as extracted_date,
+        'ahorramas' as name
     FROM raw.{raw_table_name};
     """
 
@@ -265,7 +270,7 @@ def load_prod_data_from_staging():
 
     # Get the most recent extracted date from staging
     get_latest_date_query = """
-    SELECT MAX(extracted_date) as latest_date FROM staging.supermarkets;
+    SELECT MAX(extracted_date) as latest_date FROM staging.supermarkets WHERE name = 'ahorramas';
     """
 
     latest_date_result = execute_query(get_latest_date_query)
@@ -288,13 +293,13 @@ def load_prod_data_from_staging():
 
     upsert_query = """
     INSERT INTO prod.supermarkets (
-        store_id, address, schedule, holidays, latitude, longitude, extracted_date
+        store_id, address, schedule, holidays, latitude, longitude, extracted_date, name
     )
     SELECT DISTINCT ON (s.store_id)
-        s.store_id, s.address, s.schedule, s.holidays, s.latitude, s.longitude, s.extracted_date
+        s.store_id, s.address, s.schedule, s.holidays, s.latitude, s.longitude, s.extracted_date, s.name
     FROM staging.supermarkets s
-    WHERE s.extracted_date = %s
-    ON CONFLICT (store_id, extracted_date) DO UPDATE SET
+    WHERE s.extracted_date = %s AND s.name = 'ahorramas'
+    ON CONFLICT (store_id, extracted_date, name) DO UPDATE SET
         address = EXCLUDED.address,
         schedule = EXCLUDED.schedule,
         holidays = EXCLUDED.holidays,
