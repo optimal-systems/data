@@ -261,7 +261,6 @@ def extract_products(category_url: str, pmin: float = 0.01) -> pl.DataFrame:
     """
     logging.info("Starting full extraction from category URL: %s", category_url)
 
-    # Derive cgid from the last non-empty path segment of the URL (e.g., 'mascotas')
     path_parts = [p for p in urlparse(category_url).path.split("/") if p]
     cgid = path_parts[-1] if path_parts else ""
 
@@ -275,7 +274,6 @@ def extract_products(category_url: str, pmin: float = 0.01) -> pl.DataFrame:
 
     items = []
 
-    # Decide chunking strategy: single call if <= 1000, else paginate in 1000-sized chunks
     CHUNK_SIZE = 1000
     remaining = total_size
     start = 0
@@ -289,12 +287,15 @@ def extract_products(category_url: str, pmin: float = 0.01) -> pl.DataFrame:
             "sz": str(sz),
         }
 
+        # Log including remaining items before fetching this chunk
         logging.info(
-            "Fetching grid chunk: cgid=%s start=%s sz=%s",
+            "Fetching grid chunk: cgid=%s start=%s sz=%s remaining=%s",
             cgid,
             params["start"],
             params["sz"],
+            remaining,
         )
+
         html_content = fetch_html_content(
             base_url, params=params, timeout=120, retries=5
         )
@@ -336,11 +337,9 @@ def extract_products(category_url: str, pmin: float = 0.01) -> pl.DataFrame:
                 }
             )
 
-        # Update pagination counters
         start += sz
         remaining -= sz
 
-        # If total_size was 0 or grid returned no products unexpectedly, break to avoid infinite loop
         if sz == 0 or (sz > 0 and not soup.select("div.product")):
             logging.warning(
                 "No products parsed in this chunk; breaking pagination early."
