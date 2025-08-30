@@ -1,7 +1,6 @@
 # pylint: disable=C0114
 import os
 from dotenv import load_dotenv
-import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool
 
@@ -97,7 +96,7 @@ def execute_query(query, params=None, fetch=True):
                 if cursor.description:
                     result = cursor.fetchall()
                     return [dict(row) for row in result]
-                return None # No results to fetch (e.g., for DDL/DML statements without RETURNING)
+                return None  # No results to fetch (e.g., for DDL/DML statements without RETURNING)
             else:
                 conn.commit()
                 return None
