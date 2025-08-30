@@ -240,9 +240,11 @@ def extract_products(category_url: str, pmin: float = 0.01) -> pl.DataFrame:
     """
     Extracts all product information from a given Ahorramas category URL.
 
-    The function first fetches the category page to get the total number of products,
-    then calls the Search-UpdateGrid endpoint with start=0 and sz=total_size. It parses
-    the returned HTML fragment and extracts, for each product:
+    The function first fetches the category page to obtain the total number of products.
+    If the total exceeds 1000 items, the extraction is paginated in chunks of 1000 until
+    the total number of items is reached. For each request, the Search-UpdateGrid endpoint
+    is called with the appropriate 'start' and 'sz' parameters. The returned HTML fragments
+    are parsed to extract, for each product:
         - discount-value
         - price
         - price-per-unit
@@ -267,53 +269,83 @@ def extract_products(category_url: str, pmin: float = 0.01) -> pl.DataFrame:
     logging.info("Total size detected for %s: %d", cgid, total_size)
 
     base_url = "https://www.ahorramas.com/on/demandware.store/Sites-Ahorramas-Site/es/Search-UpdateGrid"
-    params = {
-        "cgid": cgid,
-        "pmin": f"{pmin:.2f}",
-        "start": "0",
-        "sz": str(total_size),
-    }
-
-    html_content = fetch_html_content(base_url, params=params, timeout=120, retries=5)
-    soup = BeautifulSoup(html_content, "html.parser")
 
     def text_or_empty(el):
         return el.get_text(strip=True) if el else ""
 
     items = []
-    for prod in soup.select("div.product"):
-        tile_body = prod.select_one(".tile-body")
 
-        discount_el = (
-            tile_body.select_one(".discount-value .marker") if tile_body else None
+    # Decide chunking strategy: single call if <= 1000, else paginate in 1000-sized chunks
+    CHUNK_SIZE = 1000
+    remaining = total_size
+    start = 0
+
+    while remaining > 0:
+        sz = CHUNK_SIZE if remaining > CHUNK_SIZE else remaining
+        params = {
+            "cgid": cgid,
+            "pmin": f"{pmin:.2f}",
+            "start": str(start),
+            "sz": str(sz),
+        }
+
+        logging.info(
+            "Fetching grid chunk: cgid=%s start=%s sz=%s",
+            cgid,
+            params["start"],
+            params["sz"],
         )
-        discount_value = text_or_empty(discount_el)
-
-        price_el = tile_body.select_one(".price .sales .value") if tile_body else None
-        price = text_or_empty(price_el)
-
-        unit_el = (
-            tile_body.select_one(".unit-price-row .unit-price-per-unit")
-            if tile_body
-            else None
+        html_content = fetch_html_content(
+            base_url, params=params, timeout=120, retries=5
         )
-        price_per_unit = text_or_empty(unit_el)
+        soup = BeautifulSoup(html_content, "html.parser")
 
-        name_el = prod.select_one(".pdp-link h2.link.product-name-gtm")
-        name = text_or_empty(name_el)
+        for prod in soup.select("div.product"):
+            tile_body = prod.select_one(".tile-body")
 
-        img_el = prod.select_one(".image-container img.tile-image")
-        image = img_el.get("src") if img_el else ""
+            discount_el = (
+                tile_body.select_one(".discount-value .marker") if tile_body else None
+            )
+            discount_value = text_or_empty(discount_el)
 
-        items.append(
-            {
-                "discount-value": discount_value,
-                "price": price,
-                "price-per-unit": price_per_unit,
-                "name": name,
-                "image": image,
-            }
-        )
+            price_el = (
+                tile_body.select_one(".price .sales .value") if tile_body else None
+            )
+            price = text_or_empty(price_el)
+
+            unit_el = (
+                tile_body.select_one(".unit-price-row .unit-price-per-unit")
+                if tile_body
+                else None
+            )
+            price_per_unit = text_or_empty(unit_el)
+
+            name_el = prod.select_one(".pdp-link h2.link.product-name-gtm")
+            name = text_or_empty(name_el)
+
+            img_el = prod.select_one(".image-container img.tile-image")
+            image = img_el.get("src") if img_el else ""
+
+            items.append(
+                {
+                    "discount-value": discount_value,
+                    "price": price,
+                    "price-per-unit": price_per_unit,
+                    "name": name,
+                    "image": image,
+                }
+            )
+
+        # Update pagination counters
+        start += sz
+        remaining -= sz
+
+        # If total_size was 0 or grid returned no products unexpectedly, break to avoid infinite loop
+        if sz == 0 or (sz > 0 and not soup.select("div.product")):
+            logging.warning(
+                "No products parsed in this chunk; breaking pagination early."
+            )
+            break
 
     df = pl.DataFrame(items)
     logging.info("Extracted %d products for cgid=%s", len(items), cgid)
