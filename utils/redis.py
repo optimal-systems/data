@@ -1,4 +1,3 @@
-# pylint: disable=C0114
 import hashlib
 import os
 from dotenv import load_dotenv
@@ -7,7 +6,6 @@ import redis
 # Load environment variables from .env file
 load_dotenv()
 
-# pylint: disable=W0603
 _REDIS_CONN = None
 
 
