@@ -37,6 +37,7 @@ def load_raw_data_to_postgres(data: pl.DataFrame) -> str:
     Load raw supermarkets data to PostgreSQL with date-based table naming.
 
     Creates a table with format: raw_supermarket_YYYYMMDD
+    Each DataFrame column becomes a text column in PostgreSQL.
 
     Parameters:
     - data (pl.DataFrame): Raw supermarkets data from API
@@ -50,38 +51,37 @@ def load_raw_data_to_postgres(data: pl.DataFrame) -> str:
 
     logging.info("Creating raw data table: %s", table_name)
 
-    # Create table for raw data
+    # Get DataFrame columns and create table columns
+    columns = data.columns
+    column_definitions = [f'"{col}" TEXT' for col in columns]
     create_table_query = f"""
     CREATE TABLE IF NOT EXISTS {table_name} (
-        id SERIAL PRIMARY KEY,
-        raw_data JSONB NOT NULL,
-        extracted_at TIMESTAMPTZ DEFAULT NOW(),
-        processed BOOLEAN DEFAULT FALSE
+        {", ".join(column_definitions)}
     );
     """
 
-    # Create index on raw_data for JSON queries
-    create_index_query = f"""
-    CREATE INDEX IF NOT EXISTS idx_{table_name}_raw_data ON {table_name} USING GIN (raw_data);
-    """
-
     try:
-        # Create table and index
+        # Create table
         execute_query(create_table_query, fetch=False)
-        execute_query(create_index_query, fetch=False)
 
-        logging.info("Raw data table and index created successfully")
+        logging.info("Raw data table created successfully")
 
-        # Insert raw data as JSON
+        # Insert data row by row
         for row in data.iter_rows(named=True):
+            # Create placeholders for each column
+            placeholders = ", ".join(["%s"] * len(columns))
+            column_names = ", ".join([f'"{col}"' for col in columns])
+
             insert_query = f"""
-            INSERT INTO {table_name} (raw_data) 
-            VALUES (%s);
+            INSERT INTO {table_name} ({column_names}) 
+            VALUES ({placeholders});
             """
 
-            # Convert row to JSON string
-            raw_json = json.dumps(dict(row))
-            execute_query(insert_query, (raw_json,), fetch=False)
+            # Get values in the same order as columns
+            values = [
+                str(row[col]) if row[col] is not None else None for col in columns
+            ]
+            execute_query(insert_query, values, fetch=False)
 
         logging.info(
             "Raw data loaded to PostgreSQL successfully in table: %s", table_name
