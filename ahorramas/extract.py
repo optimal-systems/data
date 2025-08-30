@@ -1,8 +1,6 @@
-import os
 import sys
 import time
 import logging
-import json
 from os.path import dirname, abspath
 import requests
 
