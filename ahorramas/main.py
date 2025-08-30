@@ -20,15 +20,22 @@ from extract import extract_supermarkets
 
 
 @click.group()
+@click.pass_context
+def cli(ctx):
+    """Ahorramas CLI Tool"""
+    ctx.ensure_object(dict)
+
+
+@cli.group()
 @click.option("--debug", is_flag=True, help="Enable debug mode.")
 @click.pass_context
-def cli(ctx, debug):
-    """Ahorramas CLI Tool"""
+def supermarket(ctx, debug):
+    """Supermarket data pipeline commands"""
     ctx.ensure_object(dict)
     configure_logging(debug)
 
 
-@cli.command()
+@supermarket.command()
 @click.pass_context
 def extract_raw(ctx):
     """Extract raw data from API to PostgreSQL"""
@@ -48,7 +55,7 @@ def extract_raw(ctx):
         close_pool()
 
 
-@cli.command()
+@supermarket.command()
 @click.pass_context
 def transform_staging(ctx):
     """Transform raw data to staging schema"""
@@ -73,7 +80,7 @@ def transform_staging(ctx):
         close_pool()
 
 
-@cli.command()
+@supermarket.command()
 @click.pass_context
 def deploy_prod(ctx):
     """Deploy staging data to production"""
@@ -92,7 +99,7 @@ def deploy_prod(ctx):
         close_pool()
 
 
-@cli.command()
+@supermarket.command()
 @click.pass_context
 def run_pipeline(ctx):
     """Execute complete data pipeline"""
