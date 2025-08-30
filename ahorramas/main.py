@@ -3,6 +3,7 @@ import click
 
 import sys
 from os.path import abspath, dirname
+import polars as pl
 
 # Add the parent directory to the sys.path
 sys.path.append(dirname(dirname(abspath(__file__))))
@@ -20,6 +21,7 @@ from extract import (
     extract_products,
     extract_supermarkets,
     extract_categories,
+    extract_category_slugs,
 )
 
 
@@ -180,15 +182,30 @@ def get_categories(ctx):
 
 @products.command()
 @click.pass_context
+def get_category_slugs(ctx):
+    """Extract category slugs from Ahorramas website"""
+    logging.info("Extracting category slugs from Ahorramas website")
+    category_slugs = extract_category_slugs()
+    logging.info(f"Found {len(category_slugs)} category slugs")
+    logging.info(category_slugs)
+
+
+@products.command()
+@click.pass_context
 def get_products(ctx):
     """Extract products from the 'Mascotas' category"""
     logging.info("Extracting products from Mascotas category")
-
-    df = extract_products("https://www.ahorramas.com/mascotas/")
-    logging.info(f"Found {len(df)} products in Mascotas category")
+    categories = extract_category_slugs()
+    # extract products for each category and merge them into a single dataframe
+    df = pl.concat(
+        [
+            extract_products(f"https://www.ahorramas.com/{category}/")
+            for category in categories
+        ]
+    )
 
     # show the first 5 rows
-    print(df.head(5))
+    logging.info(df.head(5))
 
 
 if __name__ == "__main__":

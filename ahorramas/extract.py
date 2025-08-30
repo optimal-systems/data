@@ -178,13 +178,39 @@ def extract_categories():
     return urls
 
 
+def extract_category_slugs() -> list[str]:
+    """
+    Extracts top-level category slugs from the category URLs returned by `extract_categories()`.
+
+    The function calls `extract_categories()` to obtain the list of category URLs,
+    parses each URL's path, and selects the first non-empty path segment as the
+    top-level category. Both absolute and relative URLs are supported. Duplicates
+    are removed and the result is returned sorted and lowercased.
+
+    Returns:
+    list[str]: Sorted list of unique top-level categories in lowercase
+               (e.g., ["frescos", "alimentacion", "bebidas", "lacteos", "limpieza",
+                       "hogar", "cuidado-personal", "congelados", "bebe", "mascotas"]).
+    """
+    urls = extract_categories()
+
+    slugs: set[str] = set()
+    for url in urls:
+        path = urlparse(url).path
+        segments = [s for s in path.split("/") if s]
+        if segments:
+            slugs.add(segments[0].lower())
+
+    return sorted(slugs)
+
+
 def get_category_total_size(category_url: str) -> int:
     """
     Extracts the total number of products from an Ahorramas category page.
 
-    The function fetches the category URL HTML, searches for the element that
-    contains the total number of products ('.product-results-count'), and parses
-    the first integer found in its text.
+    The function fetches the category URL HTML, locates the element that contains
+    the text "<number> Resultados" (inside '.product-results-count'), and returns
+    the integer value. It supports thousands separators like '.' or spaces.
 
     Parameters:
     category_url (str): The absolute URL of the Ahorramas category page
@@ -198,10 +224,16 @@ def get_category_total_size(category_url: str) -> int:
     html_content = fetch_html_content(category_url)
     soup = BeautifulSoup(html_content, "html.parser")
 
-    counter_el = soup.select_one(".product-results-count")
+    # Prefer the span inside the counter, fallback to the container itself
+    counter_el = soup.select_one(".product-results-count span") or soup.select_one(
+        ".product-results-count"
+    )
     text = counter_el.get_text(strip=True) if counter_el else ""
-    nums = re.findall(r"\d+", text)
-    return int(nums[0]) if nums else 0
+
+    # Expected format: "<number> Resultados" -> take the first token
+    first_token = text.split(" ", 1)[0]
+    digits = re.sub(r"\D", "", first_token)  # normalize "2.311" -> "2311"
+    return int(digits) if digits else 0
 
 
 def extract_products(category_url: str, pmin: float = 0.01) -> pl.DataFrame:
@@ -242,7 +274,7 @@ def extract_products(category_url: str, pmin: float = 0.01) -> pl.DataFrame:
         "sz": str(total_size),
     }
 
-    html_content = fetch_html_content(base_url, params=params, timeout=60, retries=5)
+    html_content = fetch_html_content(base_url, params=params, timeout=120, retries=5)
     soup = BeautifulSoup(html_content, "html.parser")
 
     def text_or_empty(el):
