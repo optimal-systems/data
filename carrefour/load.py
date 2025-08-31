@@ -303,14 +303,17 @@ def load_prod_data_from_staging() -> None:
     INSERT INTO prod.supermarkets (
         store_id, address, schedule, holidays, latitude, longitude, extracted_date, name
     )
-    SELECT DISTINCT ON (s.store_id)
+    SELECT DISTINCT ON (s.latitude, s.longitude, s.extracted_date, s.name)
         s.store_id, s.address, s.schedule, s.holidays, s.latitude, s.longitude, s.extracted_date, s.name
     FROM staging.supermarkets s
     WHERE s.extracted_date = %s AND s.name = 'carrefour'
-    ON CONFLICT (store_id, extracted_date, name) DO UPDATE SET
+    ORDER BY s.latitude, s.longitude, s.extracted_date, s.name,
+             (s.store_id IS NULL), s.store_id DESC
+    ON CONFLICT (latitude, longitude, extracted_date, name) DO UPDATE SET
         address = EXCLUDED.address,
         schedule = EXCLUDED.schedule,
         holidays = EXCLUDED.holidays,
+        store_id = COALESCE(EXCLUDED.store_id, prod.supermarkets.store_id),
         last_updated = NOW();
     """
 
