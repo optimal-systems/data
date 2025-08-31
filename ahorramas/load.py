@@ -390,7 +390,7 @@ def create_staging_products_table():
     CREATE TABLE IF NOT EXISTS staging.products (
         id SERIAL,
         discount_value TEXT,
-        price TEXT,
+        price DECIMAL(10,2),
         price_per_unit TEXT,
         name TEXT NOT NULL,
         image TEXT,
@@ -446,7 +446,7 @@ def create_prod_products_table():
     CREATE TABLE IF NOT EXISTS prod.products (
         id SERIAL,
         discount_value TEXT,
-        price TEXT,
+        price DECIMAL(10,2),
         price_per_unit TEXT,
         name TEXT NOT NULL,
         image TEXT,
@@ -523,7 +523,13 @@ def load_staging_products_from_raw(raw_table_name: str):
     )
     SELECT DISTINCT ON (name, extracted_date)
         COALESCE("discount-value", '') AS discount_value,
-        COALESCE(price, '') AS price,
+        CASE 
+            WHEN price ~ '^[0-9,]+(\\.[0-9]+)?$' THEN 
+                CAST(REPLACE(price, ',', '.') AS DECIMAL(10,2))
+            WHEN price ~ '[0-9]+(\\.[0-9]+)?' THEN 
+                CAST(REPLACE(REGEXP_REPLACE(price, '[^0-9,.]', '', 'g'), ',', '.') AS DECIMAL(10,2))
+            ELSE NULL
+        END AS price,
         COALESCE("price-per-unit", '') AS price_per_unit,
         COALESCE(name, '') AS name,
         COALESCE(image, '') AS image,
