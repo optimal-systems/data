@@ -3,7 +3,6 @@ import click
 
 import sys
 from os.path import abspath, dirname
-import polars as pl
 
 # Add the parent directory to the sys.path
 sys.path.append(dirname(dirname(abspath(__file__))))
