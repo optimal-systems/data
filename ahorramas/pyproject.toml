@@ -1,6 +1,6 @@
 [project]
 name = "ahorramas"
-version = "0.2.0"
+version = "1.0.0"
 description = "Ahorramas data project"
 readme = "README.md"
 requires-python = ">=3.10"
