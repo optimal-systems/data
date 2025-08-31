@@ -386,7 +386,6 @@ def create_staging_products_table():
     """
     logging.info("Creating staging products table")
 
-    # Create staging table with well-defined columns and types based on raw data structure
     create_staging_table_query = """
     CREATE TABLE IF NOT EXISTS staging.products (
         id SERIAL,
@@ -395,21 +394,43 @@ def create_staging_products_table():
         price_per_unit TEXT,
         name TEXT NOT NULL,
         image TEXT,
+        url TEXT,
         extracted_date DATE,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
     ) PARTITION BY RANGE (extracted_date);
     """
-
     execute_query(create_staging_table_query, fetch=False)
 
-    # Create indexes for better performance
+    # Ensure new columns if table already existed
+    alter_cols_query = """
+    ALTER TABLE staging.products
+        ADD COLUMN IF NOT EXISTS url TEXT;
+    """
+    execute_query(alter_cols_query, fetch=False)
+
+    # Global unique constraint (includes partition column)
+    add_unique_constr_query = """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conname = 'staging_products_name_extracted_date_key'
+        ) THEN
+            ALTER TABLE staging.products
+            ADD CONSTRAINT staging_products_name_extracted_date_key
+            UNIQUE (name, extracted_date);
+        END IF;
+    END $$;
+    """
+    execute_query(add_unique_constr_query, fetch=False)
+
+    # Useful indexes
     create_indexes_query = """
     CREATE INDEX IF NOT EXISTS idx_staging_products_name ON staging.products(name);
     CREATE INDEX IF NOT EXISTS idx_staging_products_extracted_date ON staging.products(extracted_date);
     CREATE INDEX IF NOT EXISTS idx_staging_products_price ON staging.products(price);
     """
-
     execute_query(create_indexes_query, fetch=False)
 
     logging.info("Staging products table created successfully")
@@ -421,7 +442,6 @@ def create_prod_products_table():
     """
     logging.info("Creating production products table")
 
-    # Create production table optimized for API consumption with partitioning
     create_prod_table_query = """
     CREATE TABLE IF NOT EXISTS prod.products (
         id SERIAL,
@@ -430,16 +450,23 @@ def create_prod_products_table():
         price_per_unit TEXT,
         name TEXT NOT NULL,
         image TEXT,
+        url TEXT,
         is_active BOOLEAN DEFAULT TRUE,
         last_updated TIMESTAMPTZ DEFAULT NOW(),
         created_at TIMESTAMPTZ DEFAULT NOW(),
         extracted_date DATE
     ) PARTITION BY RANGE (extracted_date);
     """
-
     execute_query(create_prod_table_query, fetch=False)
 
-    # Add unique constraint if it doesn't exist
+    # Ensure new columns if table already existed
+    alter_cols_query = """
+    ALTER TABLE prod.products
+        ADD COLUMN IF NOT EXISTS url TEXT;
+    """
+    execute_query(alter_cols_query, fetch=False)
+
+    # UNIQUE constraint on (name, extracted_date)
     add_unique_constraint_query = """
     DO $$ 
     BEGIN
@@ -453,17 +480,14 @@ def create_prod_products_table():
         END IF;
     END $$;
     """
-
     execute_query(add_unique_constraint_query, fetch=False)
 
-    # Create indexes for API performance
     create_prod_indexes_query = """
     CREATE INDEX IF NOT EXISTS idx_prod_products_name ON prod.products(name);
     CREATE INDEX IF NOT EXISTS idx_prod_products_price ON prod.products(price);
     CREATE INDEX IF NOT EXISTS idx_prod_products_active ON prod.products(is_active);
     CREATE INDEX IF NOT EXISTS idx_prod_products_extracted_date ON prod.products(extracted_date);
     """
-
     execute_query(create_prod_indexes_query, fetch=False)
 
     logging.info("Production products schema and table structure created successfully")
@@ -478,10 +502,8 @@ def load_staging_products_from_raw(raw_table_name: str):
     """
     logging.info(f"Loading staging products data from raw.{raw_table_name}...")
 
-    # Get the extracted date from table name
     extracted_date = raw_table_name.replace("products_", "")
 
-    # Create staging table if it doesn't exist
     create_staging_products_table()
 
     # Create partition for the specific date if it doesn't exist
@@ -492,38 +514,36 @@ def load_staging_products_from_raw(raw_table_name: str):
     FOR VALUES FROM ('{extracted_date[:4]}-{extracted_date[4:6]}-{extracted_date[6:8]}') 
     TO ('{extracted_date[:4]}-{extracted_date[4:6]}-{extracted_date[6:8]}'::date + INTERVAL '1 day');
     """
-
     execute_query(create_partition_query, fetch=False)
 
-    # Delete existing data for this date to avoid duplicates
-    delete_existing_query = f"""
-    DELETE FROM staging.products 
-    WHERE extracted_date = '{extracted_date[:4]}-{extracted_date[4:6]}-{extracted_date[6:8]}'::date;
-    """
-
-    execute_query(delete_existing_query, fetch=False)
-    logging.info(
-        f"Deleted existing staging products data for date: {extracted_date[:4]}-{extracted_date[4:6]}-{extracted_date[6:8]}"
-    )
-
-    # Insert consolidated data into staging table
+    # Insert data into staging
     insert_staging_query = f"""
     INSERT INTO staging.products (
-        discount_value, price, price_per_unit, name, image, extracted_date
+        discount_value, price, price_per_unit, name, image, url, extracted_date
     )
-    SELECT 
-        COALESCE("discount-value", '') as discount_value,
-        COALESCE(price, '') as price,
-        COALESCE("price-per-unit", '') as price_per_unit,
-        COALESCE(name, '') as name,
-        COALESCE(image, '') as image,
-        '{extracted_date[:4]}-{extracted_date[4:6]}-{extracted_date[6:8]}'::date as extracted_date
-    FROM raw.{raw_table_name};
+    SELECT DISTINCT ON (name, extracted_date)
+        COALESCE("discount-value", '') AS discount_value,
+        COALESCE(price, '') AS price,
+        COALESCE("price-per-unit", '') AS price_per_unit,
+        COALESCE(name, '') AS name,
+        COALESCE(image, '') AS image,
+        COALESCE(url, '') AS url,
+        '{extracted_date[:4]}-{extracted_date[4:6]}-{extracted_date[6:8]}'::date AS extracted_date
+    FROM raw.{raw_table_name}
+    WHERE COALESCE(name, '') <> ''
+    ORDER BY name, extracted_date, "discount-value" DESC, price DESC
+    ON CONFLICT (name, extracted_date) DO UPDATE SET
+        discount_value = EXCLUDED.discount_value,
+        price = EXCLUDED.price,
+        price_per_unit = EXCLUDED.price_per_unit,
+        image = EXCLUDED.image,
+        url = EXCLUDED.url,
+        updated_at = NOW();
     """
 
     execute_query(insert_staging_query, fetch=False)
 
-    logging.info(f"Staging products data loaded from raw.{raw_table_name} successfully")
+    logging.info(f"Staging products upserted from raw.{raw_table_name} successfully")
 
 
 def load_prod_products_from_staging():
@@ -533,14 +553,11 @@ def load_prod_products_from_staging():
     """
     logging.info("Loading production products data from staging...")
 
-    # Create production table if it doesn't exist
     create_prod_products_table()
 
-    # Get the most recent extracted date from staging
     get_latest_date_query = """
     SELECT MAX(extracted_date) as latest_date FROM staging.products;
     """
-
     latest_date_result = execute_query(get_latest_date_query)
     if not latest_date_result:
         logging.error("No data found in staging.products")
@@ -548,7 +565,6 @@ def load_prod_products_from_staging():
 
     latest_date = latest_date_result[0]["latest_date"]
 
-    # Create partition for the specific date if it doesn't exist
     partition_name = f"products_{latest_date.strftime('%Y%m%d')}"
     create_partition_query = f"""
     CREATE TABLE IF NOT EXISTS prod.{partition_name} 
@@ -556,25 +572,25 @@ def load_prod_products_from_staging():
     FOR VALUES FROM ('{latest_date}') 
     TO ('{latest_date}'::date + INTERVAL '1 day');
     """
-
     execute_query(create_partition_query, fetch=False)
 
     upsert_query = """
     INSERT INTO prod.products (
-        discount_value, price, price_per_unit, name, image, extracted_date
+        discount_value, price, price_per_unit, name, image, url, extracted_date
     )
-    SELECT DISTINCT ON (s.name)
-        s.discount_value, s.price, s.price_per_unit, s.name, s.image, s.extracted_date
+    SELECT
+        s.discount_value, s.price, s.price_per_unit, s.name, s.image, s.url, s.extracted_date
     FROM staging.products s
     WHERE s.extracted_date = %s
     ON CONFLICT (name, extracted_date) DO UPDATE SET
         discount_value = EXCLUDED.discount_value,
         price = EXCLUDED.price,
         price_per_unit = EXCLUDED.price_per_unit,
+        name = EXCLUDED.name,
         image = EXCLUDED.image,
+        url = EXCLUDED.url,
         last_updated = NOW();
     """
-
     execute_query(upsert_query, (latest_date,), fetch=False)
 
     logging.info("Production products data loaded from staging successfully")

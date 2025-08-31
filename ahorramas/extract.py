@@ -6,7 +6,7 @@ import requests
 import polars as pl
 from bs4 import BeautifulSoup
 import re
-from urllib.parse import urlparse, urlencode
+from urllib.parse import urlparse, urlencode, urljoin
 
 # Add the parent directory to the sys.path
 sys.path.append(dirname(dirname(abspath(__file__))))
@@ -282,6 +282,7 @@ def extract_products(category_url: str, pmin: float = 0.01) -> pl.DataFrame:
         - price-per-unit
         - name
         - image
+        - url
 
     Parameters:
     category_url (str): The absolute URL of the Ahorramas category page
@@ -319,7 +320,6 @@ def extract_products(category_url: str, pmin: float = 0.01) -> pl.DataFrame:
             "sz": str(sz),
         }
 
-        # Log including remaining items before fetching this chunk
         logging.info(
             "Fetching grid chunk: cgid=%s start=%s sz=%s remaining=%s",
             cgid,
@@ -359,6 +359,15 @@ def extract_products(category_url: str, pmin: float = 0.01) -> pl.DataFrame:
             img_el = prod.select_one(".image-container img.tile-image")
             image = img_el.get("src") if img_el else ""
 
+            # product URL (prefer .pdp-link a[href], fallback to image/container anchors)
+            link_el = (
+                prod.select_one(".pdp-link a[href]")
+                or prod.select_one(".image-container a[href]")
+                or prod.select_one("a[href]")
+            )
+            href = link_el.get("href") if link_el else ""
+            url = urljoin("https://www.ahorramas.com", href) if href else ""
+
             items.append(
                 {
                     "discount-value": discount_value,
@@ -366,6 +375,7 @@ def extract_products(category_url: str, pmin: float = 0.01) -> pl.DataFrame:
                     "price-per-unit": price_per_unit,
                     "name": name,
                     "image": image,
+                    "url": url,
                 }
             )
 
