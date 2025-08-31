@@ -1,0 +1,17 @@
+[project]
+name = "carrefour"
+version = "0.1.0"
+description = "Carrefour data project"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.2.1",
+    "lxml>=6.0.1",
+    "polars>=1.32.3",
+    "psycopg2-binary>=2.9.10",
+    "python-dotenv>=1.1.1",
+    "redis>=6.4.0",
+    "requests>=2.32.5",
+    "urllib3>=2.5.0",
+    "beautifulsoup4>=4.9.0",
+]
