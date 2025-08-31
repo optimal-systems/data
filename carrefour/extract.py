@@ -1,10 +1,7 @@
 import sys
-import time
 import logging
 from os.path import dirname, abspath
-import requests
 import polars as pl
-import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 
 # Add the parent directory to the sys.path

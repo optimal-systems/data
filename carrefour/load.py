@@ -107,6 +107,7 @@ def create_staging_supermarkets_table() -> None:
     create_staging_table_query = """
     CREATE TABLE IF NOT EXISTS staging.supermarkets (
         id SERIAL,
+        store_id VARCHAR(50),
         address TEXT,
         schedule TEXT,
         holidays TEXT,
@@ -126,6 +127,7 @@ def create_staging_supermarkets_table() -> None:
     CREATE INDEX IF NOT EXISTS idx_staging_supermarkets_extracted_date ON staging.supermarkets(extracted_date);
     CREATE INDEX IF NOT EXISTS idx_staging_supermarkets_location ON staging.supermarkets(latitude, longitude);
     CREATE INDEX IF NOT EXISTS idx_staging_supermarkets_name ON staging.supermarkets(name);
+    CREATE INDEX IF NOT EXISTS idx_staging_supermarkets_store_id ON staging.supermarkets(store_id);
     """
 
     execute_query(create_indexes_query, fetch=False)
@@ -151,6 +153,7 @@ def create_prod_supermarkets_table() -> None:
     create_prod_table_query = """
     CREATE TABLE IF NOT EXISTS prod.supermarkets (
         id SERIAL,
+        store_id VARCHAR(50) NOT NULL,
         address TEXT NOT NULL,
         schedule TEXT,
         holidays TEXT,
@@ -166,17 +169,17 @@ def create_prod_supermarkets_table() -> None:
 
     execute_query(create_prod_table_query, fetch=False)
 
-    # Add unique constraint if it doesn't exist (based on location and date)
+    # Add unique constraint if it doesn't exist (based on store_id, date and name)
     add_unique_constraint_query = """
     DO $$ 
     BEGIN
         IF NOT EXISTS (
             SELECT 1 FROM pg_constraint 
-            WHERE conname = 'prod_supermarkets_location_extracted_date_key'
+            WHERE conname = 'prod_supermarkets_store_id_extracted_date_key'
         ) THEN
             ALTER TABLE prod.supermarkets 
-            ADD CONSTRAINT prod_supermarkets_location_extracted_date_key 
-            UNIQUE (latitude, longitude, extracted_date, name);
+            ADD CONSTRAINT prod_supermarkets_store_id_extracted_date_key 
+            UNIQUE (store_id, extracted_date, name);
         END IF;
     END $$;
     """
@@ -189,6 +192,7 @@ def create_prod_supermarkets_table() -> None:
     CREATE INDEX IF NOT EXISTS idx_prod_supermarkets_active ON prod.supermarkets(is_active);
     CREATE INDEX IF NOT EXISTS idx_prod_supermarkets_extracted_date ON prod.supermarkets(extracted_date);
     CREATE INDEX IF NOT EXISTS idx_prod_supermarkets_name ON prod.supermarkets(name);
+    CREATE INDEX IF NOT EXISTS idx_prod_supermarkets_store_id ON prod.supermarkets(store_id);
     """
 
     execute_query(create_prod_indexes_query, fetch=False)
@@ -237,9 +241,10 @@ def load_staging_data_from_raw(raw_table_name: str) -> None:
     # Insert consolidated data into staging table
     insert_staging_query = f"""
     INSERT INTO staging.supermarkets (
-        address, schedule, holidays, latitude, longitude, extracted_date, name
+        store_id, address, schedule, holidays, latitude, longitude, extracted_date, name
     )
     SELECT 
+        COALESCE(store_id, '') as store_id,
         COALESCE(address, '') as address,
         COALESCE(schedule, '') as schedule,
         COALESCE(holidays, '') as holidays,
@@ -296,13 +301,13 @@ def load_prod_data_from_staging() -> None:
 
     upsert_query = """
     INSERT INTO prod.supermarkets (
-        address, schedule, holidays, latitude, longitude, extracted_date, name
+        store_id, address, schedule, holidays, latitude, longitude, extracted_date, name
     )
-    SELECT DISTINCT ON (s.latitude, s.longitude)
-        s.address, s.schedule, s.holidays, s.latitude, s.longitude, s.extracted_date, s.name
+    SELECT DISTINCT ON (s.store_id)
+        s.store_id, s.address, s.schedule, s.holidays, s.latitude, s.longitude, s.extracted_date, s.name
     FROM staging.supermarkets s
     WHERE s.extracted_date = %s AND s.name = 'carrefour'
-    ON CONFLICT (latitude, longitude, extracted_date, name) DO UPDATE SET
+    ON CONFLICT (store_id, extracted_date, name) DO UPDATE SET
         address = EXCLUDED.address,
         schedule = EXCLUDED.schedule,
         holidays = EXCLUDED.holidays,
