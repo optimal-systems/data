@@ -306,7 +306,7 @@ def extract_products(category_url: str, pmin: float = 0.01) -> pl.DataFrame:
 
     items = []
 
-    CHUNK_SIZE = 1000
+    CHUNK_SIZE = 100
     remaining = total_size
     start = 0
 

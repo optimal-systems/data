@@ -203,8 +203,7 @@ def get_products(ctx):
             for category in categories
         ]
     )
-
-    logging.info(df.info())
+    logging.info(f"Found {len(df)} products")
 
 
 if __name__ == "__main__":
