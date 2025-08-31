@@ -395,6 +395,7 @@ def create_staging_products_table():
         name TEXT NOT NULL,
         image TEXT,
         url TEXT,
+        supermarket TEXT NOT NULL,
         extracted_date DATE,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -405,7 +406,8 @@ def create_staging_products_table():
     # Ensure new columns if table already existed
     alter_cols_query = """
     ALTER TABLE staging.products
-        ADD COLUMN IF NOT EXISTS url TEXT;
+        ADD COLUMN IF NOT EXISTS url TEXT,
+        ADD COLUMN IF NOT EXISTS supermarket TEXT NOT NULL;
     """
     execute_query(alter_cols_query, fetch=False)
 
@@ -451,6 +453,7 @@ def create_prod_products_table():
         name TEXT NOT NULL,
         image TEXT,
         url TEXT,
+        supermarket TEXT NOT NULL,
         is_active BOOLEAN DEFAULT TRUE,
         last_updated TIMESTAMPTZ DEFAULT NOW(),
         created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -462,7 +465,8 @@ def create_prod_products_table():
     # Ensure new columns if table already existed
     alter_cols_query = """
     ALTER TABLE prod.products
-        ADD COLUMN IF NOT EXISTS url TEXT;
+        ADD COLUMN IF NOT EXISTS url TEXT,
+        ADD COLUMN IF NOT EXISTS supermarket TEXT NOT NULL;
     """
     execute_query(alter_cols_query, fetch=False)
 
@@ -519,7 +523,7 @@ def load_staging_products_from_raw(raw_table_name: str):
     # Insert data into staging
     insert_staging_query = f"""
     INSERT INTO staging.products (
-        discount_value, price, price_per_unit, name, image, url, extracted_date
+        discount_value, price, price_per_unit, name, image, url, supermarket, extracted_date
     )
     SELECT DISTINCT ON (name, extracted_date)
         COALESCE("discount-value", '') AS discount_value,
@@ -534,6 +538,7 @@ def load_staging_products_from_raw(raw_table_name: str):
         COALESCE(name, '') AS name,
         COALESCE(image, '') AS image,
         COALESCE(url, '') AS url,
+        'ahorramas' AS supermarket,
         '{extracted_date[:4]}-{extracted_date[4:6]}-{extracted_date[6:8]}'::date AS extracted_date
     FROM raw.{raw_table_name}
     WHERE COALESCE(name, '') <> ''
@@ -544,6 +549,7 @@ def load_staging_products_from_raw(raw_table_name: str):
         price_per_unit = EXCLUDED.price_per_unit,
         image = EXCLUDED.image,
         url = EXCLUDED.url,
+        supermarket = EXCLUDED.supermarket,
         updated_at = NOW();
     """
 
@@ -582,10 +588,10 @@ def load_prod_products_from_staging():
 
     upsert_query = """
     INSERT INTO prod.products (
-        discount_value, price, price_per_unit, name, image, url, extracted_date
+        discount_value, price, price_per_unit, name, image, url, supermarket, extracted_date
     )
     SELECT
-        s.discount_value, s.price, s.price_per_unit, s.name, s.image, s.url, s.extracted_date
+        s.discount_value, s.price, s.price_per_unit, s.name, s.image, s.url, s.supermarket, s.extracted_date
     FROM staging.products s
     WHERE s.extracted_date = %s
     ON CONFLICT (name, extracted_date) DO UPDATE SET
@@ -595,6 +601,7 @@ def load_prod_products_from_staging():
         name = EXCLUDED.name,
         image = EXCLUDED.image,
         url = EXCLUDED.url,
+        supermarket = EXCLUDED.supermarket,
         last_updated = NOW();
     """
     execute_query(upsert_query, (latest_date,), fetch=False)
