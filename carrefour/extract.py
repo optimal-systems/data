@@ -12,8 +12,6 @@ from pathlib import Path
 # Add the parent directory to the sys.path
 sys.path.append(dirname(dirname(abspath(__file__))))
 
-from utils.content import fetch_html_content
-
 
 def read_xml_file() -> str:
     """
@@ -220,19 +218,19 @@ def extract_products_from_single_html(html_file_path: Path) -> list[dict]:
     Returns:
         list[dict]: List of extracted products
     """
-    with open(html_file_path, "r", encoding="utf-8") as file:
-        html_content = file.read()
-
-    # Search for the JavaScript 'impressions' array that contains the products
-    impressions_match = re.search(
-        r'window\["impressions"\]\s*=\s*(\[.*?\]);', html_content, re.DOTALL
-    )
-
-    if not impressions_match:
-        logging.warning("Array 'impressions' not found in %s", html_file_path.name)
-        return []
-
     try:
+        with open(html_file_path, "r", encoding="utf-8") as file:
+            html_content = file.read()
+
+        # Search for the JavaScript 'impressions' array that contains the products
+        impressions_match = re.search(
+            r'window\["impressions"\]\s*=\s*(\[.*?\]);', html_content, re.DOTALL
+        )
+
+        if not impressions_match:
+            logging.warning("Array 'impressions' not found in %s", html_file_path.name)
+            return []
+
         # Extract and parse JSON
         impressions_json = impressions_match.group(1)
         products_data = json.loads(impressions_json)
@@ -241,16 +239,57 @@ def extract_products_from_single_html(html_file_path: Path) -> list[dict]:
         filename = html_file_path.name
         category = extract_category_from_filename(filename)
 
-        products = []
+        # Parse HTML and build a map from slug (in href) to {name, url}
+        soup = BeautifulSoup(html_content, "html.parser")
+        product_links = soup.find_all("h2", class_="product-card__title")
+
+        # slug -> {"name": human_text, "url": href}
+        product_map: dict[str, dict[str, str]] = {}
+
+        for h2 in product_links:
+            a_tag = h2.find("a")
+            if not a_tag:
+                continue
+
+            human_text = (a_tag.get_text(strip=True) or "").strip()
+            href = (a_tag.get("href") or "").strip()
+            if not human_text or not href:
+                continue
+
+            # Derive slug from href path:
+            # Example href:
+            # /supermercado/toallitas-humedas-higienicas-infantiles-carrefour-soft-100-ud/R-VC4AECOMM-002344/p
+            path = urlparse(href).path
+            parts = [
+                p for p in path.split("/") if p
+            ]  # ["supermercado", "<slug>", "R-....", "p"]
+            slug = parts[1] if len(parts) >= 2 else ""
+
+            if slug and slug not in product_map:
+                product_map[slug] = {"name": human_text, "url": href}
+
+        products: list[dict] = []
+
         for product in products_data:
-            # Normalize and clean product data for simplified structure
+            # JSON gives the slug in 'item_name' (e.g., 'toallitas-humedas-higienicas-infantiles-carrefour-soft-100-ud')
+            json_slug = str(product.get("item_name", "")).strip()
+
+            # Get human-friendly name and URL from HTML via slug derived from href
+            mapped = product_map.get(json_slug, {})
+            human_name = mapped.get("name", "")
+            product_url = mapped.get("url", "")
+
+            # Fallback: if we didn't find it in HTML, create a readable name from the slug
+            if not human_name and json_slug:
+                human_name = json_slug.replace("-", " ").strip().capitalize()
+
             clean_product = {
                 "discount_value": str(product.get("coupon", "")),
                 "price": float(product.get("price", 0.0)),
                 "price_per_unit": str(product.get("item_variant", "")),
-                "name": str(product.get("item_name", "")),
-                "image": "",  # Not available in Carrefour data
-                "url": "",  # Not available in Carrefour data
+                "name": human_name,  # texto del <a>
+                "image": "",  # no disponible aquí
+                "url": product_url,  # href del <a> (relativa)
                 "supermarket": "carrefour",
                 "source_file": filename,
                 "extracted_category": category,

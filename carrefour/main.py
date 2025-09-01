@@ -180,7 +180,7 @@ def run_products_pipeline(ctx):
     current_date = datetime.now().strftime("%Y%m%d")
     raw_table_name = f"products_{current_date}"
 
-    logging.info(products)
+    logging.debug(products)
 
     # Load raw data to PostgreSQL
     load_products_raw_data_to_postgres(products)

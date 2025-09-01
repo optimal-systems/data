@@ -536,13 +536,13 @@ def load_staging_products_from_raw(raw_table_name: str) -> None:
         discount_value, price, price_per_unit, name, image, url, supermarket, extracted_date
     )
     SELECT 
-        COALESCE(coupon, '') as discount_value,
+        COALESCE(discount_value, '') as discount_value,
         CASE 
             WHEN price ~ '^[0-9.]+$' THEN CAST(price AS DECIMAL(10, 2))
             ELSE NULL 
         END as price,
-        COALESCE(item_variant, '') as price_per_unit,
-        COALESCE(item_name, '') as name,
+        COALESCE(price_per_unit, '') as price_per_unit,
+        COALESCE(name, '') as name,
         '' as image,
         '' as url,
         'carrefour' as supermarket,
