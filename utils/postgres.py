@@ -128,6 +128,93 @@ def test_connection():
         return False
 
 
+def configure_products_search():
+    """
+    Configure full-text search functionality for products table.
+    This function sets up the search configuration, creates the search column,
+    and creates the search function for products.
+    """
+    search_config_sql = """
+    -- 0) Limpieza: borra la función antigua (5 args) si está por ahí
+    DO $$
+    BEGIN
+      IF to_regprocedure('prod.search_products(text,integer,integer,boolean,boolean)') IS NOT NULL THEN
+        DROP FUNCTION prod.search_products(text,integer,integer,boolean,boolean);
+      END IF;
+    END$$;
+
+    -- 1) Config mínima por si no está (idempotente)
+    CREATE SCHEMA IF NOT EXISTS prod;
+    CREATE EXTENSION IF NOT EXISTS unaccent;
+
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_ts_config c
+        JOIN pg_namespace n ON n.oid = c.cfgnamespace
+        WHERE n.nspname = 'prod' AND c.cfgname = 'es_unaccent'
+      ) THEN
+        CREATE TEXT SEARCH CONFIGURATION prod.es_unaccent (COPY = spanish);
+        ALTER TEXT SEARCH CONFIGURATION prod.es_unaccent
+          ALTER MAPPING FOR hword, hword_part, word WITH unaccent, spanish_stem;
+      END IF;
+    END$$;
+
+    -- 2) Deja la columna 'search' EXACTAMENTE con name+supermarket
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='prod' AND table_name='products' AND column_name='search'
+      ) THEN
+        ALTER TABLE prod.products DROP COLUMN search;
+      END IF;
+    END$$;
+
+    ALTER TABLE prod.products
+    ADD COLUMN search tsvector
+    GENERATED ALWAYS AS (
+      setweight(to_tsvector('simple',           COALESCE(supermarket,'')), 'A') ||
+      setweight(to_tsvector('prod.es_unaccent', COALESCE(name,'')),        'B')
+    ) STORED;
+
+    -- 3) Índice GIN sobre la columna search
+    CREATE INDEX IF NOT EXISTS idx_prod_products_search
+    ON prod.products USING GIN(search);
+
+    -- 4) Función definitiva (1 parámetro), SIN "último snapshot", con is_active = TRUE
+    CREATE OR REPLACE FUNCTION prod.search_products(term text) 
+    RETURNS TABLE(
+      id int,
+      name text,
+      supermarket text,
+      price numeric,
+      url text,
+      rank real
+    )
+    LANGUAGE SQL
+    STABLE
+    PARALLEL SAFE
+    AS
+    $$
+      SELECT id, name, supermarket, price, url,
+             -- mismo patrón que tu referencia: dos señales
+             ts_rank(search, websearch_to_tsquery('prod.es_unaccent', term)) +
+             ts_rank(search, websearch_to_tsquery('simple', term)) AS rank
+      FROM prod.products
+      WHERE is_active
+        AND (
+             search @@ websearch_to_tsquery('prod.es_unaccent', term)
+          OR search @@ websearch_to_tsquery('simple', term)
+        )
+      ORDER BY rank DESC
+    $$;
+    """
+
+    execute_query(search_config_sql, fetch=False)
+
+
 def close_pool():
     """
     Close the PostgreSQL connection pool.

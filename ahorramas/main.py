@@ -8,7 +8,7 @@ import polars as pl
 # Add the parent directory to the sys.path
 sys.path.append(dirname(dirname(abspath(__file__))))
 
-from utils.postgres import close_pool
+from utils.postgres import close_pool, configure_products_search
 from load import (
     load_raw_data_to_postgres,
     load_staging_data_from_raw,
@@ -354,6 +354,10 @@ def run_products_pipeline(ctx):
         # Step 4: Promote to production
         logging.info("Step 4: Deploying products data to production")
         load_prod_products_from_staging()
+
+        # Step 5: Configure search functionality
+        logging.info("Step 5: Configuring products search functionality")
+        configure_products_search()
 
         logging.info("Full products data pipeline completed successfully!")
 
