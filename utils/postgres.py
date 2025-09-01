@@ -135,14 +135,6 @@ def configure_products_search():
     and creates the search function for products.
     """
     search_config_sql = """
-    -- 0) Limpieza: borra la función antigua (5 args) si está por ahí
-    DO $$
-    BEGIN
-      IF to_regprocedure('prod.search_products(text,integer,integer,boolean,boolean)') IS NOT NULL THEN
-        DROP FUNCTION prod.search_products(text,integer,integer,boolean,boolean);
-      END IF;
-    END$$;
-
     -- 1) Config mínima por si no está (idempotente)
     CREATE SCHEMA IF NOT EXISTS prod;
     CREATE EXTENSION IF NOT EXISTS unaccent;
@@ -191,6 +183,8 @@ def configure_products_search():
       supermarket text,
       price numeric,
       url text,
+      image text,
+      price_per_unit text,
       rank real
     )
     LANGUAGE SQL
@@ -198,7 +192,7 @@ def configure_products_search():
     PARALLEL SAFE
     AS
     $$
-      SELECT id, name, supermarket, price, url,
+      SELECT id, name, supermarket, price, url, image, price_per_unit,
              -- mismo patrón que tu referencia: dos señales
              ts_rank(search, websearch_to_tsquery('prod.es_unaccent', term)) +
              ts_rank(search, websearch_to_tsquery('simple', term)) AS rank
