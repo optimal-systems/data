@@ -14,9 +14,14 @@ from load import (
     load_prod_data_from_staging,
     create_staging_supermarkets_table,
     create_prod_supermarkets_table,
+    load_products_raw_data_to_postgres,
+    create_staging_products_table,
+    create_prod_products_table,
+    load_staging_products_from_raw,
+    load_prod_products_from_staging,
 )
 from utils.logger import configure_logging
-from extract import extract_supermarkets
+from extract import extract_products_from_html_files, extract_supermarkets
 
 
 @click.group()
@@ -140,6 +145,60 @@ def run_pipeline(ctx):
         raise
     finally:
         close_pool()
+
+
+@cli.group()
+@click.option("--debug", is_flag=True, help="Enable debug mode.")
+@click.pass_context
+def products(ctx, debug):
+    """Products data pipeline commands"""
+    ctx.ensure_object(dict)
+    configure_logging(debug)
+
+
+@products.command()
+@click.pass_context
+def get_products(ctx):
+    """Extract products from Carrefour website"""
+    logging.info("Extracting products from Carrefour website")
+    products = extract_products_from_html_files()
+    logging.info(f"Found {products.height} products")
+    logging.info(products)
+
+
+@products.command()
+@click.pass_context
+def run_products_pipeline(ctx):
+    """Execute complete products data pipeline"""
+    logging.info("Starting full products data pipeline execution")
+    products = extract_products_from_html_files()
+    logging.info(f"Found {products.height} products")
+
+    # Generate table name for raw data
+    from datetime import datetime
+
+    current_date = datetime.now().strftime("%Y%m%d")
+    raw_table_name = f"products_{current_date}"
+
+    logging.info(products)
+
+    # Load raw data to PostgreSQL
+    load_products_raw_data_to_postgres(products)
+
+    # Create schemas and table structures
+    logging.info("Creating schemas and table structures for products")
+    create_staging_products_table()
+    create_prod_products_table()
+
+    # Transform to staging
+    logging.info("Transforming products data to staging")
+    load_staging_products_from_raw(raw_table_name)
+
+    # Promote to production
+    logging.info("Promoting products data to production")
+    load_prod_products_from_staging()
+
+    logging.info("Full products data pipeline completed successfully!")
 
 
 if __name__ == "__main__":

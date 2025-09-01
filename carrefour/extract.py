@@ -3,9 +3,16 @@ import logging
 from os.path import dirname, abspath
 import polars as pl
 from bs4 import BeautifulSoup
+from urllib.parse import urlparse, urljoin
+import re
+import json
+import os
+from pathlib import Path
 
 # Add the parent directory to the sys.path
 sys.path.append(dirname(dirname(abspath(__file__))))
+
+from utils.content import fetch_html_content
 
 
 def read_xml_file() -> str:
@@ -121,3 +128,209 @@ def extract_supermarkets() -> pl.DataFrame:
 
     logging.info("Successfully extracted %d Carrefour stores", df.height)
     return df
+
+
+def extract_categories_from_html(html: str) -> list[dict]:
+    """
+    Extrae categorías top del HTML de /supermercado.
+    Devuelve: [{name, slug, cat_id, url}]
+    """
+    base_url = "https://www.carrefour.es"
+    soup = BeautifulSoup(html, "html.parser")
+    nav = soup.find("nav", class_="home-food-view__category-SEO-links")
+    links = nav.select("a[href]") if nav else []
+    out = []
+
+    for a in links:
+        name = a.get_text(strip=True)
+        href = a.get("href") or ""
+        if not name or not href:
+            continue
+        url = urljoin(base_url, href)
+        path = urlparse(href).path.strip("/")
+        parts = [p for p in path.split("/") if p]
+        slug = parts[1] if len(parts) > 1 else (parts[0] if parts else "")
+        m = re.search(r"(cat\d+)", href)
+        cat_id = m.group(1) if m else ""
+        out.append({"name": name, "slug": slug, "cat_id": cat_id, "url": url})
+    return out
+
+
+def extract_category_slugs_from_html(html: str) -> list[str]:
+    """Devuelve solo los slugs únicos y ordenados."""
+    cats = extract_categories_from_html(html)
+    return sorted({c["slug"].lower() for c in cats if c.get("slug")})
+
+
+def extract_products_from_html_files(raw_data_dir: str = None) -> pl.DataFrame:
+    """
+    Extract products from all HTML files in the raw_data directory.
+
+    Args:
+        raw_data_dir: Directory containing HTML files. If None, uses default directory.
+
+    Returns:
+        pl.DataFrame: DataFrame with extracted products
+    """
+    if raw_data_dir is None:
+        raw_data_dir = dirname(abspath(__file__)) + "/raw_data"
+
+    if not os.path.exists(raw_data_dir):
+        logging.error("Raw data directory not found: %s", raw_data_dir)
+        raise FileNotFoundError(f"Raw data directory not found: {raw_data_dir}")
+
+    all_products = []
+    html_files = list(Path(raw_data_dir).glob("*.html"))
+
+    logging.info("Found %d HTML files to process", len(html_files))
+
+    for html_file in html_files:
+        try:
+            logging.info("Processing file: %s", html_file.name)
+            products = extract_products_from_single_html(html_file)
+            all_products.extend(products)
+            logging.info(
+                "Extracted %d products from file %s", len(products), html_file.name
+            )
+        except Exception as e:
+            logging.error("Error processing file %s: %s", html_file.name, e)
+            continue
+
+    if not all_products:
+        logging.warning("No products found in any HTML file")
+        return pl.DataFrame()
+
+    # Create DataFrame and remove duplicates
+    df = pl.DataFrame(all_products)
+
+    # Remove duplicates based on name and supermarket
+    df = df.unique(subset=["name", "supermarket"], keep="first")
+
+    logging.info("Total unique products extracted: %d", df.height)
+    return df
+
+
+def extract_products_from_single_html(html_file_path: Path) -> list[dict]:
+    """
+    Extract products from a single HTML file.
+
+    Args:
+        html_file_path: Path to the HTML file
+
+    Returns:
+        list[dict]: List of extracted products
+    """
+    with open(html_file_path, "r", encoding="utf-8") as file:
+        html_content = file.read()
+
+    # Search for the JavaScript 'impressions' array that contains the products
+    impressions_match = re.search(
+        r'window\["impressions"\]\s*=\s*(\[.*?\]);', html_content, re.DOTALL
+    )
+
+    if not impressions_match:
+        logging.warning("Array 'impressions' not found in %s", html_file_path.name)
+        return []
+
+    try:
+        # Extract and parse JSON
+        impressions_json = impressions_match.group(1)
+        products_data = json.loads(impressions_json)
+
+        # Extract category information from filename
+        filename = html_file_path.name
+        category = extract_category_from_filename(filename)
+
+        products = []
+        for product in products_data:
+            # Normalize and clean product data for simplified structure
+            clean_product = {
+                "discount_value": str(product.get("coupon", "")),
+                "price": float(product.get("price", 0.0)),
+                "price_per_unit": str(product.get("item_variant", "")),
+                "name": str(product.get("item_name", "")),
+                "image": "",  # Not available in Carrefour data
+                "url": "",  # Not available in Carrefour data
+                "supermarket": "carrefour",
+                "source_file": filename,
+                "extracted_category": category,
+            }
+            products.append(clean_product)
+
+        return products
+
+    except json.JSONDecodeError as e:
+        logging.error("Error parsing JSON products in %s: %s", html_file_path.name, e)
+        return []
+    except Exception as e:
+        logging.error("Unexpected error processing %s: %s", html_file_path.name, e)
+        return []
+
+
+def extract_category_from_filename(filename: str) -> str:
+    """
+    Extract category from HTML filename.
+
+    Args:
+        filename: HTML filename
+
+    Returns:
+        str: Category extracted from filename
+    """
+    # Mapping of filename patterns to readable categories
+    category_mapping = {
+        "productos-frescos": "Productos Frescos",
+        "la-despensa": "La Despensa",
+        "parafarmacia": "Parafarmacia",
+        "mascotas": "Mascotas",
+        "bebe": "Bebé",
+    }
+
+    for key, value in category_mapping.items():
+        if key in filename.lower():
+            return value
+
+    # If no match, extract from filename
+    if "cat20002" in filename:
+        return "Productos Frescos"
+    elif "cat20001" in filename:
+        return "La Despensa"
+    elif "cat20008" in filename:
+        return "Parafarmacia"
+    elif "cat20007" in filename:
+        return "Mascotas"
+    elif "cat20006" in filename:
+        return "Bebé"
+
+    return "Unknown"
+
+
+def get_product_statistics(df: pl.DataFrame) -> dict:
+    """
+    Get statistics from extracted products.
+
+    Args:
+        df: DataFrame with products
+
+    Returns:
+        dict: Dictionary with statistics
+    """
+    if df.height == 0:
+        return {"total_products": 0}
+
+    stats = {
+        "total_products": df.height,
+        "total_categories": df["extracted_category"].n_unique(),
+        "categories": df.group_by("extracted_category")
+        .agg(pl.count().alias("count"))
+        .to_dicts(),
+        "price_range": {
+            "min": float(df["price"].min()),
+            "max": float(df["price"].max()),
+            "avg": float(df["price"].mean()),
+        },
+        "discounts_count": df.filter(pl.col("discount_value") != "").height,
+        "files_processed": df["source_file"].n_unique(),
+    }
+
+    return stats

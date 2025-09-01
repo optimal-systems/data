@@ -320,3 +320,375 @@ def load_prod_data_from_staging() -> None:
     execute_query(upsert_query, (latest_date,), fetch=False)
 
     logging.info("Production data loaded from staging successfully")
+
+
+def load_products_raw_data_to_postgres(data: pl.DataFrame) -> None:
+    """
+    Load raw products data to PostgreSQL with date-based table naming.
+
+    Creates a table with format: raw.products_YYYYMMDD
+    Each DataFrame column becomes a text column in PostgreSQL.
+    If table exists, it will be replaced to avoid duplicates.
+
+    Parameters:
+        data (pl.DataFrame): Raw products data from HTML extraction
+
+    Returns:
+        None
+    """
+    # Generate table name with current date
+    current_date = datetime.now().strftime("%Y%m%d")
+    table_name = f"products_{current_date}"
+    full_table_name = f"raw.{table_name}"
+
+    logging.info("Creating raw products table: %s", full_table_name)
+
+    # Get DataFrame columns and create table columns
+    columns = data.columns
+    column_definitions = [f'"{col}" TEXT' for col in columns]
+
+    # Drop table if exists and recreate to avoid duplicates
+    drop_table_query = f"DROP TABLE IF EXISTS {full_table_name};"
+    create_table_query = f"""
+    CREATE TABLE {full_table_name} (
+        {", ".join(column_definitions)}
+    );
+    """
+
+    try:
+        # Drop existing table and recreate
+        execute_query(drop_table_query, fetch=False)
+        execute_query(create_table_query, fetch=False)
+
+        logging.info("Raw products table created successfully")
+
+        # Insert data row by row
+        for row in data.iter_rows(named=True):
+            # Create placeholders for each column
+            placeholders = ", ".join(["%s"] * len(columns))
+            column_names = ", ".join([f'"{col}"' for col in columns])
+
+            insert_query = f"""
+            INSERT INTO {full_table_name} ({column_names}) 
+            VALUES ({placeholders});
+            """
+
+            # Get values in the same order as columns
+            values = [
+                str(row[col]) if row[col] is not None else None for col in columns
+            ]
+            execute_query(insert_query, values, fetch=False)
+
+        logging.info(
+            "Raw products data loaded to PostgreSQL successfully in table: %s",
+            full_table_name,
+        )
+
+    except Exception as e:
+        logging.error("Error loading raw products data to PostgreSQL: %s", e)
+        raise
+
+
+def create_staging_products_table() -> None:
+    """
+    Create staging schema and base table structure for consolidated products data.
+
+    Returns:
+        None
+    """
+    logging.info("Creating staging products table")
+
+    # Create staging table with simplified structure compatible with Ahorramas
+    create_staging_table_query = """
+    CREATE TABLE IF NOT EXISTS staging.products (
+        id SERIAL,
+        discount_value TEXT,
+        price DECIMAL(10, 2),
+        price_per_unit TEXT,
+        name TEXT NOT NULL,
+        image TEXT,
+        url TEXT,
+        supermarket TEXT NOT NULL,
+        extracted_date DATE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    ) PARTITION BY RANGE (extracted_date);
+    """
+
+    execute_query(create_staging_table_query, fetch=False)
+
+    # Create indexes for better performance
+    create_indexes_query = """
+    CREATE INDEX IF NOT EXISTS idx_staging_products_extracted_date ON staging.products(extracted_date);
+    CREATE INDEX IF NOT EXISTS idx_staging_products_name ON staging.products(name);
+    CREATE INDEX IF NOT EXISTS idx_staging_products_supermarket ON staging.products(supermarket);
+    CREATE INDEX IF NOT EXISTS idx_staging_products_price ON staging.products(price);
+    """
+
+    execute_query(create_indexes_query, fetch=False)
+
+    logging.info("Staging products table created successfully")
+
+
+def create_prod_products_table() -> None:
+    """
+    Create production schema and final table structure for products API consumption.
+
+    Returns:
+        None
+    """
+    logging.info("Creating production products table")
+
+    # Create production table with simplified structure compatible with Ahorramas
+    create_prod_table_query = """
+    CREATE TABLE IF NOT EXISTS prod.products (
+        id SERIAL,
+        discount_value TEXT,
+        price DECIMAL(10, 2),
+        price_per_unit TEXT,
+        name TEXT NOT NULL,
+        image TEXT,
+        url TEXT,
+        supermarket TEXT NOT NULL,
+        is_active BOOLEAN DEFAULT TRUE,
+        last_updated TIMESTAMPTZ DEFAULT NOW(),
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        extracted_date DATE
+    ) PARTITION BY RANGE (extracted_date);
+    """
+
+    execute_query(create_prod_table_query, fetch=False)
+
+    # Add unique constraint if it doesn't exist (based on name, supermarket and extracted_date)
+    add_unique_constraint_query = """
+    DO $$ 
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint 
+            WHERE conname = 'prod_products_name_supermarket_extracted_date_key'
+        ) THEN
+            ALTER TABLE prod.products 
+            ADD CONSTRAINT prod_products_name_supermarket_extracted_date_key 
+            UNIQUE (name, supermarket, extracted_date);
+        END IF;
+    END $$;
+    """
+
+    execute_query(add_unique_constraint_query, fetch=False)
+
+    # Create indexes for API performance
+    create_prod_indexes_query = """
+    CREATE INDEX IF NOT EXISTS idx_prod_products_extracted_date ON prod.products(extracted_date);
+    CREATE INDEX IF NOT EXISTS idx_prod_products_active ON prod.products(is_active);
+    CREATE INDEX IF NOT EXISTS idx_prod_products_name ON prod.products(name);
+    CREATE INDEX IF NOT EXISTS idx_prod_products_supermarket ON prod.products(supermarket);
+    CREATE INDEX IF NOT EXISTS idx_prod_products_price ON prod.products(price);
+    """
+
+    execute_query(create_prod_indexes_query, fetch=False)
+
+    logging.info("Production products schema and table structure created successfully")
+
+
+def load_staging_products_from_raw(raw_table_name: str) -> None:
+    """
+    Load and consolidate products data from raw schema to staging schema.
+
+    Parameters:
+        raw_table_name (str): Name of the raw table to consolidate
+
+    Returns:
+        None
+    """
+    logging.info(f"Loading staging products data from raw.{raw_table_name}...")
+
+    # Get the extracted date from table name
+    extracted_date = raw_table_name.replace("products_", "")
+
+    # Create staging table if it doesn't exist
+    create_staging_products_table()
+
+    # Create partition for the specific date if it doesn't exist
+    partition_name = f"products_{extracted_date}"
+    create_partition_query = f"""
+    CREATE TABLE IF NOT EXISTS staging.{partition_name} 
+    PARTITION OF staging.products 
+    FOR VALUES FROM ('{extracted_date[:4]}-{extracted_date[4:6]}-{extracted_date[6:8]}') 
+    TO ('{extracted_date[:4]}-{extracted_date[4:6]}-{extracted_date[6:8]}'::date + INTERVAL '1 day');
+    """
+
+    execute_query(create_partition_query, fetch=False)
+
+    # Delete existing data for this date to avoid duplicates
+    delete_existing_query = f"""
+    DELETE FROM staging.products 
+    WHERE extracted_date = '{extracted_date[:4]}-{extracted_date[4:6]}-{extracted_date[6:8]}'::date;
+    """
+
+    execute_query(delete_existing_query, fetch=False)
+    logging.info(
+        f"Deleted existing staging products data for date: {extracted_date[:4]}-{extracted_date[4:6]}-{extracted_date[6:8]}"
+    )
+
+    # Insert consolidated data into staging table
+    insert_staging_query = f"""
+    INSERT INTO staging.products (
+        discount_value, price, price_per_unit, name, image, url, supermarket, extracted_date
+    )
+    SELECT 
+        COALESCE(coupon, '') as discount_value,
+        CASE 
+            WHEN price ~ '^[0-9.]+$' THEN CAST(price AS DECIMAL(10, 2))
+            ELSE NULL 
+        END as price,
+        COALESCE(item_variant, '') as price_per_unit,
+        COALESCE(item_name, '') as name,
+        '' as image,
+        '' as url,
+        'carrefour' as supermarket,
+        '{extracted_date[:4]}-{extracted_date[4:6]}-{extracted_date[6:8]}'::date as extracted_date
+    FROM raw.{raw_table_name};
+    """
+
+    execute_query(insert_staging_query, fetch=False)
+
+    logging.info(f"Staging products data loaded from raw.{raw_table_name} successfully")
+
+
+def load_prod_products_from_staging() -> None:
+    """
+    Load and promote products data from staging schema to production schema.
+    This function will upsert data, updating existing records and inserting new ones.
+
+    Returns:
+        None
+    """
+    logging.info("Loading production products data from staging...")
+
+    # Create production table if it doesn't exist
+    create_prod_products_table()
+
+    # Get the most recent extracted date from staging
+    get_latest_date_query = """
+    SELECT MAX(extracted_date) as latest_date FROM staging.products;
+    """
+
+    latest_date_result = execute_query(get_latest_date_query)
+    if not latest_date_result:
+        logging.error("No products data found in staging.products")
+        return
+
+    latest_date = latest_date_result[0]["latest_date"]
+
+    # Create partition for the specific date if it doesn't exist
+    partition_name = f"products_{latest_date.strftime('%Y%m%d')}"
+    create_partition_query = f"""
+    CREATE TABLE IF NOT EXISTS prod.{partition_name} 
+    PARTITION OF prod.products 
+    FOR VALUES FROM ('{latest_date}') 
+    TO ('{latest_date}'::date + INTERVAL '1 day');
+    """
+
+    execute_query(create_partition_query, fetch=False)
+
+    upsert_query = """
+    INSERT INTO prod.products (
+        discount_value, price, price_per_unit, name, image, url, supermarket, extracted_date
+    )
+    SELECT DISTINCT ON (s.name, s.supermarket, s.extracted_date)
+        s.discount_value, s.price, s.price_per_unit, s.name, s.image, s.url, s.supermarket, s.extracted_date
+    FROM staging.products s
+    WHERE s.extracted_date = %s
+    ORDER BY s.name, s.supermarket, s.extracted_date
+    ON CONFLICT (name, supermarket, extracted_date) DO UPDATE SET
+        discount_value = EXCLUDED.discount_value,
+        price = EXCLUDED.price,
+        price_per_unit = EXCLUDED.price_per_unit,
+        image = EXCLUDED.image,
+        url = EXCLUDED.url,
+        last_updated = NOW();
+    """
+
+    execute_query(upsert_query, (latest_date,), fetch=False)
+
+    logging.info("Production products data loaded from staging successfully")
+
+
+def get_products_statistics() -> dict:
+    """
+    Get statistics about products data in the database.
+
+    Returns:
+        dict: Dictionary with products statistics
+    """
+    try:
+        # Get total products count
+        total_count_query = (
+            "SELECT COUNT(*) as total FROM prod.products WHERE is_active = TRUE;"
+        )
+        total_result = execute_query(total_count_query)
+        total_products = total_result[0]["total"] if total_result else 0
+
+        # Get products by supermarket
+        supermarket_stats_query = """
+        SELECT supermarket, COUNT(*) as count 
+        FROM prod.products 
+        WHERE is_active = TRUE 
+        GROUP BY supermarket 
+        ORDER BY count DESC;
+        """
+        supermarket_stats = execute_query(supermarket_stats_query)
+
+        # Get price statistics
+        price_stats_query = """
+        SELECT 
+            MIN(price) as min_price,
+            MAX(price) as max_price,
+            AVG(price) as avg_price
+        FROM prod.products 
+        WHERE is_active = TRUE AND price IS NOT NULL;
+        """
+        price_stats = execute_query(price_stats_query)
+
+        # Get products with discounts count
+        discounts_count_query = """
+        SELECT COUNT(*) as discounts_count 
+        FROM prod.products 
+        WHERE is_active = TRUE AND discount_value != '';
+        """
+        discounts_result = execute_query(discounts_count_query)
+        discounts_count = (
+            discounts_result[0]["discounts_count"] if discounts_result else 0
+        )
+
+        # Get latest extraction date
+        latest_date_query = """
+        SELECT MAX(extracted_date) as latest_date 
+        FROM prod.products;
+        """
+        latest_date_result = execute_query(latest_date_query)
+        latest_date = (
+            latest_date_result[0]["latest_date"] if latest_date_result else None
+        )
+
+        return {
+            "total_products": total_products,
+            "supermarkets": supermarket_stats,
+            "price_range": {
+                "min": float(price_stats[0]["min_price"])
+                if price_stats and price_stats[0]["min_price"]
+                else 0.0,
+                "max": float(price_stats[0]["max_price"])
+                if price_stats and price_stats[0]["max_price"]
+                else 0.0,
+                "avg": float(price_stats[0]["avg_price"])
+                if price_stats and price_stats[0]["avg_price"]
+                else 0.0,
+            },
+            "discounts_count": discounts_count,
+            "latest_extraction_date": latest_date.isoformat() if latest_date else None,
+        }
+
+    except Exception as e:
+        logging.error("Error getting products statistics: %s", e)
+        return {"error": str(e)}
